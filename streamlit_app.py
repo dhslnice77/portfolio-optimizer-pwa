@@ -46,13 +46,61 @@ os.chdir(script_dir)
 def get_portfolio_data(tickers_weights, start_date, end_date):
     """여러 ETF의 데이터를 가져와 결합"""
     portfolio_data = {}
-    for ticker in tickers_weights.keys():
-        stock = yf.Ticker(ticker)
-        data = stock.history(start=start_date, end=end_date)
-        if not data.empty:
-            portfolio_data[ticker] = data['Close']
+    error_tickers = []
     
-    return pd.DataFrame(portfolio_data)
+    for ticker in tickers_weights.keys():
+        try:
+            # 티커 심볼을 대문자로 변환
+            ticker_upper = ticker.upper()
+            
+            # 데이터 가져오기 시도 (최대 3번)
+            for attempt in range(3):
+                try:
+                    stock = yf.Ticker(ticker_upper)
+                    # period 매개변수를 사용하여 더 안정적인 데이터 가져오기
+                    data = stock.history(
+                        start=start_date,
+                        end=end_date,
+                        interval="1d",
+                        auto_adjust=True
+                    )
+                    
+                    if not data.empty and len(data) > 0:
+                        portfolio_data[ticker_upper] = data['Close']
+                        st.success(f"{ticker_upper} 데이터 로드 완료")
+                        break
+                    else:
+                        if attempt == 2:  # 마지막 시도
+                            error_tickers.append(ticker)
+                            st.warning(f"{ticker_upper} 데이터를 찾을 수 없습니다.")
+                except Exception as e:
+                    if attempt == 2:  # 마지막 시도
+                        error_tickers.append(ticker)
+                        st.warning(f"{ticker_upper} 데이터 로드 실패: {str(e)}")
+                    continue
+                
+        except Exception as e:
+            error_tickers.append(ticker)
+            st.error(f"{ticker_upper} 처리 중 오류 발생: {str(e)}")
+            continue
+    
+    if error_tickers:
+        error_msg = f"다음 ETF의 데이터를 가져오는데 실패했습니다: {', '.join(error_tickers)}"
+        st.error(error_msg)
+        if not portfolio_data:  # 모든 티커가 실패한 경우
+            return pd.DataFrame()
+    
+    if not portfolio_data:
+        st.error("선택한 ETF들의 데이터를 가져오는데 실패했습니다. 티커 심볼을 확인해주세요.")
+        return pd.DataFrame()
+    
+    # 데이터 결합 및 누락값 처리
+    df = pd.DataFrame(portfolio_data)
+    if df.isnull().any().any():
+        st.warning("일부 데이터에 누락값이 있어 forward fill로 처리합니다.")
+        df = df.fillna(method='ffill').fillna(method='bfill')
+    
+    return df
 
 def rebalance_portfolio(portfolio_data, weights, rebalance_period):
     """포트폴리오 리밸런싱 수행"""
@@ -237,10 +285,28 @@ def main():
         st.subheader('ETF Selection')
         num_etfs = st.number_input('Number of ETFs', min_value=2, max_value=10, value=2)
         
+        # ETF 티커 입력 도움말 추가
+        st.markdown("""
+        **ETF 티커 입력 예시:**
+        - SPY (S&P 500 ETF)
+        - QQQ (나스닥 100 ETF)
+        - IWM (Russell 2000 ETF)
+        - VTI (Vanguard Total Stock Market ETF)
+        - EFA (선진국 주식)
+        - EEM (신흥국 주식)
+        - AGG (미국 채권)
+        - TLT (미국 장기 국채)
+        - GLD (금)
+        """)
+        
         # ETF 티커 입력
         tickers = []
         for i in range(num_etfs):
-            ticker = st.text_input(f'ETF {i+1} Ticker', key=f'ticker_{i}')
+            ticker = st.text_input(
+                f'ETF {i+1} Ticker',
+                key=f'ticker_{i}',
+                help="ETF 티커 심볼을 입력하세요 (예: SPY, QQQ)"
+            ).strip().upper()  # 공백 제거 및 대문자 변환
             if ticker:
                 tickers.append(ticker)
         
@@ -316,56 +382,6 @@ def main():
                         
                         optimized_weights = optimize_portfolio(returns, opt_type)
                         weights = {ticker: weight for ticker, weight in zip(tickers, optimized_weights)}
-                        
-                        # Efficient Frontier 계산 및 표시
-                        st.subheader('Efficient Frontier Analysis')
-                        random_portfolios = generate_random_portfolios(returns)
-                        
-                        # 현재 포트폴리오의 성과 계산
-                        current_return, current_vol, current_sharpe = portfolio_stats(
-                            np.array(list(weights.values())), 
-                            returns
-                        )
-                        
-                        # Efficient Frontier 그래프
-                        fig = go.Figure()
-                        
-                        # 무작위 포트폴리오 산점도
-                        fig.add_trace(go.Scatter(
-                            x=random_portfolios['Volatility'],
-                            y=random_portfolios['Return'],
-                            mode='markers',
-                            name='Random Portfolios',
-                            marker=dict(
-                                size=5,
-                                color=random_portfolios['Sharpe'],
-                                colorscale='Viridis',
-                                showscale=True,
-                                colorbar=dict(title='Sharpe Ratio')
-                            )
-                        ))
-                        
-                        # 최적화된 포트폴리오 위치
-                        fig.add_trace(go.Scatter(
-                            x=[current_vol],
-                            y=[current_return],
-                            mode='markers',
-                            name='Optimized Portfolio',
-                            marker=dict(
-                                size=15,
-                                symbol='star',
-                                color='red'
-                            )
-                        ))
-                        
-                        fig.update_layout(
-                            title=f'{optimization_option} Portfolio on Efficient Frontier',
-                            xaxis_title='Expected Volatility (Standard Deviation)',
-                            yaxis_title='Expected Annual Return',
-                            hovermode='closest'
-                        )
-                        
-                        st.plotly_chart(fig, use_container_width=True)
                     
                     # 포트폴리오 성과 계산
                     portfolio_returns = rebalance_portfolio(
@@ -382,33 +398,7 @@ def main():
                     
                     # 결과 표시
                     st.header('Portfolio Analysis Results')
-                    
-                    # 성과 지표
-                    st.subheader('Portfolio Performance')
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric('Annualized Return', f"{metrics['annualized_return']:.2%}")
-                    with col2:
-                        st.metric('Volatility', f"{metrics['standard_deviation']:.2%}")
-                    with col3:
-                        st.metric('Sharpe Ratio', f"{sharpe_ratio:.2f}")
-                    with col4:
-                        st.metric('Maximum Drawdown', f"{metrics['max_drawdown']:.2%}")
-                    
-                    # 추가 성과 지표
-                    st.subheader('Additional Metrics')
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        positive_months = (portfolio_returns > 0).sum()
-                        total_months = len(portfolio_returns)
-                        st.metric('Win Rate', f"{(positive_months/total_months)*100:.1f}%")
-                    with col2:
-                        best_month = portfolio_returns.max()
-                        st.metric('Best Monthly Return', f"{best_month:.2%}")
-                    with col3:
-                        worst_month = portfolio_returns.min()
-                        st.metric('Worst Monthly Return', f"{worst_month:.2%}")
-                    
+
                     # 가중치 표시
                     st.subheader('Portfolio Weights')
                     weights_df = pd.DataFrame({
@@ -417,24 +407,54 @@ def main():
                     })
                     st.table(weights_df)
                     
+                    # 성과 지표
+                    st.subheader('Performance Metrics')
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric('Annual Return', f"{metrics['annualized_return']:.2%}")
+                    with col2:
+                        st.metric('Volatility', f"{metrics['standard_deviation']:.2%}")
+                    with col3:
+                        st.metric('Sharpe Ratio', f"{sharpe_ratio:.2f}")
+                    with col4:
+                        st.metric('Max Drawdown', f"{metrics['max_drawdown']:.2%}")
+                    
+                    # 추가 성과 지표
+                    st.subheader('Risk Metrics')
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        positive_months = (portfolio_returns > 0).sum()
+                        total_months = len(portfolio_returns)
+                        st.metric('Win Rate', f"{(positive_months/total_months)*100:.1f}%")
+                    with col2:
+                        best_month = portfolio_returns.max()
+                        st.metric('Best Month', f"{best_month:.2%}")
+                    with col3:
+                        worst_month = portfolio_returns.min()
+                        st.metric('Worst Month', f"{worst_month:.2%}")
+                    
                     # 수익률 차트
-                    st.subheader('Cumulative Returns')
+                    st.subheader('Performance Chart')
+                    
+                    # 누적 수익률 차트
                     fig = go.Figure()
                     fig.add_trace(go.Scatter(
                         x=metrics['cumulative_returns'].index,
                         y=metrics['cumulative_returns'].values,
                         mode='lines',
-                        name='Portfolio'
+                        name='Portfolio Value',
+                        fill='tozeroy'
                     ))
                     fig.update_layout(
+                        title='Cumulative Returns',
                         xaxis_title='Date',
-                        yaxis_title='Cumulative Return',
-                        hovermode='x unified'
+                        yaxis_title='Growth of $1',
+                        hovermode='x unified',
+                        showlegend=True
                     )
                     st.plotly_chart(fig, use_container_width=True)
                     
                     # 연간 수익률
-                    st.subheader('Annual Returns')
                     annual_returns_df = pd.DataFrame(
                         list(metrics['annual_returns'].items()),
                         columns=['Year', 'Return']
@@ -443,9 +463,15 @@ def main():
                         annual_returns_df,
                         x='Year',
                         y='Return',
+                        title='Annual Returns',
                         text=annual_returns_df['Return'].apply(lambda x: f'{x:.2%}')
                     )
                     fig.update_traces(textposition='outside')
+                    fig.update_layout(
+                        xaxis_title='Year',
+                        yaxis_title='Return',
+                        yaxis_tickformat=',.0%'
+                    )
                     st.plotly_chart(fig, use_container_width=True)
                     
             except Exception as e:
