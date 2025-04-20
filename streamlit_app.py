@@ -132,18 +132,15 @@ def portfolio_stats(weights, returns):
     sharpe_ratio = portfolio_return / portfolio_vol  # 무위험 수익률 0% 가정
     return portfolio_return, portfolio_vol, sharpe_ratio
 
+def calculate_max_drawdown(returns, weights):
+    """포트폴리오의 최대 낙폭 계산"""
+    portfolio_returns = np.sum(returns * weights, axis=1)
+    cumulative_returns = (1 + portfolio_returns).cumprod()
+    drawdowns = cumulative_returns / cumulative_returns.cummax() - 1
+    return drawdowns.min()
+
 def optimize_portfolio(returns, optimization_type='Sharpe', constraints=None):
-    """포트폴리오 최적화
-    
-    Parameters:
-    - returns: 일별 수익률
-    - optimization_type: 최적화 방식
-    - constraints: 추가 제약조건
-        - target_return: 목표 수익률
-        - max_mdd: 최대 허용 MDD
-        - max_weight: 개별 자산 최대 비중
-        - min_weight: 개별 자산 최소 비중
-    """
+    """포트폴리오 최적화"""
     n_assets = returns.shape[1]
     
     # 기본 제약조건: 비중 합 = 1
@@ -157,30 +154,25 @@ def optimize_portfolio(returns, optimization_type='Sharpe', constraints=None):
         if 'min_weight' in constraints:
             bounds = [(max(0, constraints['min_weight']), 1) for _ in range(n_assets)]
     
-    def portfolio_metrics(weights):
-        """포트폴리오 주요 지표 계산"""
-        portfolio_return, portfolio_vol, _ = portfolio_metrics(weights)
-        return portfolio_return, portfolio_vol, max_drawdown
-    
     # 목적 함수 설정
     if optimization_type == 'Sharpe':
         def objective(weights):
-            portfolio_return, portfolio_vol, _ = portfolio_metrics(weights)
+            portfolio_return, portfolio_vol, _ = portfolio_stats(weights, returns)
             return -(portfolio_return / portfolio_vol)  # 음수를 붙여 최대화
             
     elif optimization_type == 'Volatility':
         def objective(weights):
-            _, portfolio_vol, _ = portfolio_metrics(weights)
+            _, portfolio_vol, _ = portfolio_stats(weights, returns)
             return portfolio_vol
             
     elif optimization_type == 'MaxReturn':
         def objective(weights):
-            portfolio_return, _, _ = portfolio_metrics(weights)
+            portfolio_return, _, _ = portfolio_stats(weights, returns)
             return -portfolio_return  # 음수를 붙여 최대화
             
     elif optimization_type == 'MinMDD':
         def objective(weights):
-            _, _, max_drawdown = portfolio_metrics(weights)
+            max_drawdown = calculate_max_drawdown(returns, weights)
             return -max_drawdown  # 음수를 붙여 최대화
     
     # 추가 제약조건 설정
@@ -196,7 +188,7 @@ def optimize_portfolio(returns, optimization_type='Sharpe', constraints=None):
             max_mdd = constraints['max_mdd']
             basic_constraints.append({
                 'type': 'ineq',
-                'fun': lambda x: max_mdd - (-portfolio_metrics(x)[2])  # MDD 제한
+                'fun': lambda x: max_mdd - (-calculate_max_drawdown(returns, x))
             })
     
     # 초기 가중치 = 균등 배분
@@ -237,6 +229,7 @@ def generate_random_portfolios(returns, n_portfolios=1000):
 def main():
     st.title('Portfolio Analyzer')
     
+    # 사이드바에 입력 컨트롤 배치
     with st.sidebar:
         st.header('Portfolio Settings')
         
@@ -244,268 +237,219 @@ def main():
         st.subheader('ETF Selection')
         num_etfs = st.number_input('Number of ETFs', min_value=2, max_value=10, value=2)
         
+        # ETF 티커 입력
+        tickers = []
+        for i in range(num_etfs):
+            ticker = st.text_input(f'ETF {i+1} Ticker', key=f'ticker_{i}')
+            if ticker:
+                tickers.append(ticker)
+        
         # 최적화 옵션
         optimization_option = st.radio(
             'Portfolio Optimization',
             ['Manual Weights', 'Maximum Sharpe Ratio', 'Minimum Volatility', 
-             'Maximum Return', 'Minimum Drawdown', 'Custom Constraints']
+             'Maximum Return', 'Minimum Maximum Drawdown']
         )
         
-        # 제약조건 설정 (Custom Constraints 선택 시)
-        constraints = {}
-        if optimization_option == 'Custom Constraints':
-            st.subheader('Optimization Constraints')
-            
-            use_target_return = st.checkbox('Set Target Return')
-            if use_target_return:
-                target_return = st.slider('Target Annual Return (%)', 
-                                        min_value=0, max_value=50, value=10) / 100
-                constraints['target_return'] = target_return
-            
-            use_max_mdd = st.checkbox('Limit Maximum Drawdown')
-            if use_max_mdd:
-                max_mdd = st.slider('Maximum Allowed Drawdown (%)', 
-                                  min_value=5, max_value=50, value=20) / 100
-                constraints['max_mdd'] = max_mdd
-            
-            use_weight_limits = st.checkbox('Set Weight Limits')
-            if use_weight_limits:
-                col1, col2 = st.columns(2)
-                with col1:
-                    min_weight = st.number_input('Minimum Weight (%)', 
-                                               min_value=0, max_value=50, value=5) / 100
-                    constraints['min_weight'] = min_weight
-                with col2:
-                    max_weight = st.number_input('Maximum Weight (%)', 
-                                               min_value=0, max_value=100, value=50) / 100
-                    constraints['max_weight'] = max_weight
+        # 초기 가중치 설정
+        weights = {}
         
-        # 티커 입력
-        tickers = {}
-        for i in range(num_etfs):
-            ticker = st.text_input(f'ETF Ticker {i+1}', 
-                                 value=f'SPY' if i==0 else f'QQQ' if i==1 else '')
-            if ticker:
-                tickers[ticker] = 0
+        # 수동 가중치 입력
+        if optimization_option == 'Manual Weights':
+            st.write("Enter weights (total should be 100%)")
+            total_weight = 0
+            for i, ticker in enumerate(tickers):
+                weight = st.number_input(f'Weight for {ticker} (%)', 
+                                      min_value=0.0, 
+                                      max_value=100.0, 
+                                      value=100.0/len(tickers) if tickers else 0.0,
+                                      step=0.1,
+                                      format="%.1f",
+                                      key=f'weight_{i}')
+                weights[ticker] = weight / 100
+                total_weight += weight
+            
+            if abs(total_weight - 100) > 0.01:  # 0.01% 오차 허용
+                st.warning(f'Total weight must be 100%. Current total: {total_weight:.1f}%')
+        else:
+            # 최적화 옵션 선택 시 균등 가중치로 초기화
+            if tickers:
+                equal_weight = 1.0 / len(tickers)
+                weights = {ticker: equal_weight for ticker in tickers}
         
-        # 나머지 설정들...
-        start_date = st.date_input('Start Date', datetime.now() - timedelta(days=365*10))
+        # 기간 설정
+        st.subheader('Time Period')
+        start_date = st.date_input('Start Date', datetime.now() - timedelta(days=365))
         end_date = st.date_input('End Date', datetime.now())
-        initial_investment = st.number_input('Initial Investment ($)', value=10000)
+        
+        # 리밸런싱 주기
         rebalance_period = st.selectbox(
             'Rebalancing Period',
-            ['None', 'Monthly', 'Quarterly', 'Semi-Annual', 'Yearly']
+            ['No Rebalancing', 'Monthly', 'Quarterly', 'Semi-Annual', 'Yearly']
         )
-
-    if st.sidebar.button('Analyze Portfolio'):
-        try:
-            # 데이터 가져오기
-            portfolio_data = get_portfolio_data(tickers, start_date, end_date)
-            
-            if portfolio_data.empty:
-                st.error("No data available for selected tickers")
-                return
-            
-            # 일별 수익률 계산
-            returns = portfolio_data.pct_change().dropna()
-            
-            # 최적화 수행
-            if optimization_option != 'Manual Weights':
-                opt_type = {
-                    'Maximum Sharpe Ratio': 'Sharpe',
-                    'Minimum Volatility': 'Volatility',
-                    'Maximum Return': 'MaxReturn',
-                    'Minimum Drawdown': 'MinMDD',
-                    'Custom Constraints': 'Sharpe'
-                }[optimization_option]
+        
+        analyze_button = st.button('Analyze Portfolio')
+    
+    # 메인 영역에 결과 표시
+    if analyze_button:
+        if len(tickers) < 2:
+            st.error('Please select at least 2 ETFs')
+        else:
+            try:
+                # 포트폴리오 데이터 가져오기
+                portfolio_data = get_portfolio_data(weights, start_date, end_date)
                 
-                optimal_weights = optimize_portfolio(
-                    returns,
-                    optimization_type=opt_type,
-                    constraints=constraints if optimization_option == 'Custom Constraints' else None
-                )
-                weights = optimal_weights
-            
-            # 최적화된 포트폴리오 구성 표시를 더 눈에 띄게
-            st.header('Optimized Portfolio Results')
-            
-            # 1. 최적 비중 표시
-            st.subheader('Optimal Portfolio Weights')
-            composition_df = pd.DataFrame({
-                'ETF': list(tickers.keys()),
-                'Weight': [f"{w*100:.2f}%" for w in weights],
-                'Allocation': [f"${initial_investment * w:,.2f}" for w in weights]
-            })
-            st.table(composition_df)
-            
-            # 2. 최적화 포트폴리오 주요 지표
-            opt_return, opt_vol, opt_sharpe = portfolio_stats(np.array(weights), returns)
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric(
-                    "Expected Annual Return",
-                    f"{opt_return*100:.2f}%"
-                )
-            with col2:
-                st.metric(
-                    "Expected Volatility",
-                    f"{opt_vol*100:.2f}%"
-                )
-            with col3:
-                st.metric(
-                    "Sharpe Ratio",
-                    f"{opt_sharpe:.2f}"
-                )
-            
-            # 3. 효율적 투자선 그래프
-            st.subheader('Portfolio Optimization Analysis')
-            random_portfolios = generate_random_portfolios(returns)
-            
-            fig = go.Figure()
-            
-            # 무작위 포트폴리오 산점도
-            fig.add_trace(go.Scatter(
-                x=random_portfolios['Volatility'],
-                y=random_portfolios['Return'],
-                mode='markers',
-                name='Random Portfolios',
-                marker=dict(
-                    size=5,
-                    color=random_portfolios['Sharpe'],
-                    colorscale='Viridis',
-                    showscale=True,
-                    colorbar=dict(title='Sharpe Ratio')
-                )
-            ))
-            
-            # 최적 포트폴리오 위치
-            fig.add_trace(go.Scatter(
-                x=[opt_vol],
-                y=[opt_return],
-                mode='markers',
-                name='Optimal Portfolio',
-                marker=dict(
-                    size=15,
-                    symbol='star',
-                    color='red'
-                )
-            ))
-            
-            fig.update_layout(
-                title=f'{optimization_option} Portfolio on Efficient Frontier',
-                xaxis_title='Expected Volatility (Standard Deviation)',
-                yaxis_title='Expected Annual Return',
-                hovermode='closest'
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
-
-            # 4. 백테스트 결과 표시
-            st.header('Portfolio Backtest Results')
-            st.write("Historical performance analysis using the optimal weights:")
-
-            # 포트폴리오 수익률 계산 (리밸런싱 적용)
-            portfolio_returns = rebalance_portfolio(portfolio_data, dict(zip(tickers.keys(), weights)), rebalance_period)
-            metrics = calculate_metrics(portfolio_returns)
-
-            # 백테스트 주요 지표
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric(
-                    "Historical Return",
-                    f"{metrics['annualized_return']*100:.2f}%"
-                )
-            with col2:
-                st.metric(
-                    "Historical Volatility",
-                    f"{metrics['standard_deviation']*100:.2f}%"
-                )
-            with col3:
-                st.metric(
-                    "Maximum Drawdown",
-                    f"{metrics['max_drawdown']*100:.2f}%"
-                )
-            with col4:
-                sharpe = metrics['annualized_return'] / metrics['standard_deviation']
-                st.metric(
-                    "Historical Sharpe",
-                    f"{sharpe:.2f}"
-                )
-
-            # 포트폴리오 가치 변화
-            st.subheader('Portfolio Value Growth')
-            portfolio_values = initial_investment * metrics['cumulative_returns']
-
-            fig = go.Figure()
-            fig.add_trace(
-                go.Scatter(
-                    x=portfolio_values.index,
-                    y=portfolio_values,
-                    mode='lines',
-                    name='Portfolio Value',
-                    fill='tozeroy'
-                )
-            )
-            fig.update_layout(
-                yaxis_title='Portfolio Value ($)',
-                hovermode='x',
-                showlegend=True
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-            # 연간 수익률
-            st.subheader('Annual Returns')
-            annual_returns_df = pd.DataFrame(
-                list(metrics['annual_returns'].items()),
-                columns=['Year', 'Return']
-            )
-            annual_returns_df['Return'] = annual_returns_df['Return'] * 100
-
-            fig = px.bar(
-                annual_returns_df,
-                x='Year',
-                y='Return',
-                title='Annual Returns (%)'
-            )
-            fig.update_traces(marker_color='rgb(0, 123, 255)')
-            st.plotly_chart(fig, use_container_width=True)
-
-            # 추가 통계
-            st.subheader('Additional Performance Metrics')
-            positive_months = (portfolio_returns > 0).sum()
-            total_months = len(portfolio_returns.dropna())
-
-            stats_col1, stats_col2, stats_col3 = st.columns(3)
-            with stats_col1:
-                st.metric(
-                    "Positive Months",
-                    f"{positive_months} / {total_months}"
-                )
-                st.metric(
-                    "Win Rate",
-                    f"{(positive_months/total_months)*100:.1f}%"
-                )
-            with stats_col2:
-                st.metric(
-                    "Best Year",
-                    f"{max(metrics['annual_returns'].values())*100:.2f}%"
-                )
-                st.metric(
-                    "Worst Year",
-                    f"{min(metrics['annual_returns'].values())*100:.2f}%"
-                )
-            with stats_col3:
-                st.metric(
-                    "Average Annual Return",
-                    f"{np.mean(list(metrics['annual_returns'].values()))*100:.2f}%"
-                )
-                st.metric(
-                    "Return Consistency",
-                    f"{(len([r for r in metrics['annual_returns'].values() if r > 0]) / len(metrics['annual_returns']))*100:.1f}%"
-                )
-            
-        except Exception as e:
-            st.error(f"Error analyzing portfolio: {str(e)}")
+                if portfolio_data.empty:
+                    st.error('No data available for the selected ETFs and time period')
+                else:
+                    # 수익률 계산
+                    returns = portfolio_data.pct_change().dropna()
+                    
+                    # 최적화 옵션에 따른 가중치 계산
+                    if optimization_option != 'Manual Weights':
+                        opt_type = {
+                            'Maximum Sharpe Ratio': 'Sharpe',
+                            'Minimum Volatility': 'Volatility',
+                            'Maximum Return': 'MaxReturn',
+                            'Minimum Maximum Drawdown': 'MinMDD'
+                        }[optimization_option]
+                        
+                        optimized_weights = optimize_portfolio(returns, opt_type)
+                        weights = {ticker: weight for ticker, weight in zip(tickers, optimized_weights)}
+                        
+                        # Efficient Frontier 계산 및 표시
+                        st.subheader('Efficient Frontier Analysis')
+                        random_portfolios = generate_random_portfolios(returns)
+                        
+                        # 현재 포트폴리오의 성과 계산
+                        current_return, current_vol, current_sharpe = portfolio_stats(
+                            np.array(list(weights.values())), 
+                            returns
+                        )
+                        
+                        # Efficient Frontier 그래프
+                        fig = go.Figure()
+                        
+                        # 무작위 포트폴리오 산점도
+                        fig.add_trace(go.Scatter(
+                            x=random_portfolios['Volatility'],
+                            y=random_portfolios['Return'],
+                            mode='markers',
+                            name='Random Portfolios',
+                            marker=dict(
+                                size=5,
+                                color=random_portfolios['Sharpe'],
+                                colorscale='Viridis',
+                                showscale=True,
+                                colorbar=dict(title='Sharpe Ratio')
+                            )
+                        ))
+                        
+                        # 최적화된 포트폴리오 위치
+                        fig.add_trace(go.Scatter(
+                            x=[current_vol],
+                            y=[current_return],
+                            mode='markers',
+                            name='Optimized Portfolio',
+                            marker=dict(
+                                size=15,
+                                symbol='star',
+                                color='red'
+                            )
+                        ))
+                        
+                        fig.update_layout(
+                            title=f'{optimization_option} Portfolio on Efficient Frontier',
+                            xaxis_title='Expected Volatility (Standard Deviation)',
+                            yaxis_title='Expected Annual Return',
+                            hovermode='closest'
+                        )
+                        
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    # 포트폴리오 성과 계산
+                    portfolio_returns = rebalance_portfolio(
+                        portfolio_data,
+                        weights,
+                        rebalance_period
+                    )
+                    
+                    # 성과 지표 계산
+                    metrics = calculate_metrics(portfolio_returns)
+                    
+                    # Sharpe Ratio 계산 (무위험 수익률 = 0% 가정)
+                    sharpe_ratio = metrics['annualized_return'] / metrics['standard_deviation']
+                    
+                    # 결과 표시
+                    st.header('Portfolio Analysis Results')
+                    
+                    # 성과 지표
+                    st.subheader('Portfolio Performance')
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric('Annualized Return', f"{metrics['annualized_return']:.2%}")
+                    with col2:
+                        st.metric('Volatility', f"{metrics['standard_deviation']:.2%}")
+                    with col3:
+                        st.metric('Sharpe Ratio', f"{sharpe_ratio:.2f}")
+                    with col4:
+                        st.metric('Maximum Drawdown', f"{metrics['max_drawdown']:.2%}")
+                    
+                    # 추가 성과 지표
+                    st.subheader('Additional Metrics')
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        positive_months = (portfolio_returns > 0).sum()
+                        total_months = len(portfolio_returns)
+                        st.metric('Win Rate', f"{(positive_months/total_months)*100:.1f}%")
+                    with col2:
+                        best_month = portfolio_returns.max()
+                        st.metric('Best Monthly Return', f"{best_month:.2%}")
+                    with col3:
+                        worst_month = portfolio_returns.min()
+                        st.metric('Worst Monthly Return', f"{worst_month:.2%}")
+                    
+                    # 가중치 표시
+                    st.subheader('Portfolio Weights')
+                    weights_df = pd.DataFrame({
+                        'ETF': list(weights.keys()),
+                        'Weight': [f"{w:.2%}" for w in weights.values()]
+                    })
+                    st.table(weights_df)
+                    
+                    # 수익률 차트
+                    st.subheader('Cumulative Returns')
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(
+                        x=metrics['cumulative_returns'].index,
+                        y=metrics['cumulative_returns'].values,
+                        mode='lines',
+                        name='Portfolio'
+                    ))
+                    fig.update_layout(
+                        xaxis_title='Date',
+                        yaxis_title='Cumulative Return',
+                        hovermode='x unified'
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # 연간 수익률
+                    st.subheader('Annual Returns')
+                    annual_returns_df = pd.DataFrame(
+                        list(metrics['annual_returns'].items()),
+                        columns=['Year', 'Return']
+                    )
+                    fig = px.bar(
+                        annual_returns_df,
+                        x='Year',
+                        y='Return',
+                        text=annual_returns_df['Return'].apply(lambda x: f'{x:.2%}')
+                    )
+                    fig.update_traces(textposition='outside')
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+            except Exception as e:
+                st.error(f'Error analyzing portfolio: {str(e)}')
 
 if __name__ == "__main__":
     main() 

@@ -1,19 +1,19 @@
 {
     "name": "Portfolio Optimizer",
-    "short_name": "PortOpt",
-    "description": "Professional ETF Portfolio Optimization Tool",
+    "short_name": "Portfolio Opt",
+    "description": "Portfolio optimization and analysis tool",
     "start_url": "/",
     "display": "standalone",
-    "background_color": "#ffffff",
+    "background_color": "#000000",
     "theme_color": "#000000",
     "icons": [
         {
-            "src": "icon-192.png",
+            "src": "icon-192x192.png",
             "sizes": "192x192",
             "type": "image/png"
         },
         {
-            "src": "icon-512.png",
+            "src": "icon-512x512.png",
             "sizes": "512x512",
             "type": "image/png"
         }
