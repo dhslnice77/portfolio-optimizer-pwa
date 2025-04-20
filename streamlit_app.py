@@ -3,8 +3,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
-from alpha_vantage.timeseries import TimeSeries
-import time
+import yfinance as yf
 from scipy.optimize import minimize
 from scipy.stats import norm
 import itertools
@@ -12,8 +11,6 @@ import itertools
 # Initialize session state
 if 'portfolio_data' not in st.session_state:
     st.session_state.portfolio_data = None
-if 'api_key' not in st.session_state:
-    st.session_state.api_key = ''
 if 'show_help' not in st.session_state:
     st.session_state.show_help = False
 
@@ -61,10 +58,6 @@ def show_help():
     """도움말 문서 표시"""
     st.sidebar.title("도움말")
     st.sidebar.markdown("""
-    ### API 키 설정
-    - Alpha Vantage에서 무료 API 키를 발급받아 입력하세요.
-    - API 키는 안전하게 저장됩니다.
-    
     ### ETF 입력
     - 한 줄에 하나의 ETF 티커를 입력하세요.
     - 예시 ETF를 참고하여 입력할 수 있습니다.
@@ -86,13 +79,8 @@ def show_help():
 
 def get_portfolio_data(tickers, start_date, end_date):
     """
-    Fetch portfolio data using Alpha Vantage API
+    Fetch portfolio data using yfinance
     """
-    if not st.session_state.api_key:
-        st.error("Alpha Vantage API 키를 먼저 입력해주세요!")
-        return None
-
-    ts = TimeSeries(key=st.session_state.api_key, output_format='pandas')
     all_data = pd.DataFrame()
     
     progress_bar = st.progress(0)
@@ -101,8 +89,8 @@ def get_portfolio_data(tickers, start_date, end_date):
     for i, ticker in enumerate(tickers):
         try:
             status_text.text(f"{ticker} 데이터를 가져오는 중...")
-            data, _ = ts.get_daily_adjusted(symbol=ticker, outputsize='full')
-            data = data[['5. adjusted close']].rename(columns={'5. adjusted close': ticker})
+            data = yf.download(ticker, start=start_date, end=end_date)['Adj Close']
+            data = pd.DataFrame(data).rename(columns={'Adj Close': ticker})
             
             if all_data.empty:
                 all_data = data
@@ -110,7 +98,6 @@ def get_portfolio_data(tickers, start_date, end_date):
                 all_data = all_data.join(data)
             
             progress_bar.progress((i + 1) / len(tickers))
-            time.sleep(12)  # Rate limiting
             
         except Exception as e:
             st.warning(f"{ticker} 데이터를 가져올 수 없습니다: {str(e)}")
@@ -123,17 +110,8 @@ def get_portfolio_data(tickers, start_date, end_date):
         st.error("선택한 ETF들의 데이터를 가져올 수 없습니다.")
         return None
         
-    # Filter date range
-    all_data.index = pd.to_datetime(all_data.index)
-    mask = (all_data.index >= start_date) & (all_data.index <= end_date)
-    filtered_data = all_data.loc[mask]
-    
-    if filtered_data.empty:
-        st.error("선택한 기간에 대한 데이터가 없습니다.")
-        return None
-        
     # Handle missing values
-    filtered_data = filtered_data.ffill().bfill()
+    filtered_data = all_data.ffill().bfill()
     
     return filtered_data
 
@@ -328,20 +306,6 @@ def main():
     if st.session_state.show_help:
         show_help()
     
-    # API Key input with improved UI
-    st.subheader("API 키 설정")
-    api_key = st.text_input(
-        "Alpha Vantage API 키를 입력하세요:", 
-        value=st.session_state.api_key,
-        type="password",
-        help="무료 API 키는 https://www.alphavantage.co/support/#api-key 에서 받을 수 있습니다."
-    )
-    
-    if api_key != st.session_state.api_key:
-        st.session_state.api_key = api_key
-        st.session_state.portfolio_data = None
-        st.success("API 키가 업데이트되었습니다.")
-    
     # Example ETFs with improved UI
     st.subheader("ETF 입력")
     example_etfs = {
@@ -460,6 +424,9 @@ def main():
                     
                     # Calculate performance metrics
                     performance_metrics = calculate_performance_metrics(returns, optimal_weights)
+                    
+                    # Display results
+                    st.success("포트폴리오 분석이 완료되었습니다!")
                     
                     # Display optimal weights
                     st.subheader("최적 포트폴리오 가중치")
@@ -657,8 +624,6 @@ def main():
                     )
                     
                     st.plotly_chart(fig)
-                    
-                    st.success("포트폴리오 분석이 완료되었습니다!")
 
 if __name__ == "__main__":
     main() 

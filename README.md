@@ -49,7 +49,7 @@ streamlit run streamlit_app.py
 
 - Python
 - Streamlit
-- Alpha Vantage API
+- yfinance
 - pandas
 - numpy
 - plotly
